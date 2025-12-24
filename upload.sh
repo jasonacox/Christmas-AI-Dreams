@@ -46,5 +46,28 @@ fi
 echo "Verify image manifests"
 docker buildx imagetools inspect ${IMAGE_NAME}:${TAG} | grep Platform || true
 
+# Create and push a git tag for this version (skip if tag is 'latest')
+if [ "${TAG}" != "latest" ]; then
+    # Normalize tag name: use as-is if it starts with 'v', otherwise prefix with 'v'
+    if [[ "${TAG}" =~ ^v ]]; then
+        TAG_NAME="${TAG}"
+    else
+        TAG_NAME="v${TAG}"
+    fi
+
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        if git rev-parse --verify "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
+            echo "Git tag ${TAG_NAME} already exists locally. Pushing to origin..."
+        else
+            echo "Creating annotated git tag ${TAG_NAME}"
+            git tag -a "${TAG_NAME}" -m "Release ${TAG_NAME}" || true
+        fi
+        echo "Pushing tag ${TAG_NAME} to origin"
+        git push origin "${TAG_NAME}" || true
+    else
+        echo "Not a git repository, skipping git tag creation"
+    fi
+fi
+
 echo "Done."
 
