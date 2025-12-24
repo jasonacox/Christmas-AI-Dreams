@@ -34,6 +34,10 @@ docker run -p 4000:4000 \
 	jasonacox/christmas-ai-dreams:latest
 ```
 
+**Run as Service**
+
+See the [server.sh](./server.sh) script to see how to run this as a service.
+
 ## Local development
 
 Quick steps to run the project locally for development:
