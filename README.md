@@ -15,7 +15,7 @@ The Christmas dream engine uses either a locally hosted SwarmUI installation or 
 ```bash
 docker run -p 4000:4000 \
 	-e IMAGE_PROVIDER=swarmui \
-	-e SWARMUI="http://10.0.1.25:7801" \
+	-e SWARMUI="http://localhost:7801" \
 	-e IMAGE_MODEL="Flux/flux1-schnell-fp8" \
 	-e IMAGE_CFGSCALE="1.0" \
 	-e IMAGE_STEPS="6" \
@@ -57,7 +57,7 @@ fi
 
 # set providers and run the server (example using local SwarmUI)
 export IMAGE_PROVIDER=swarmui
-export SWARMUI="http://10.0.1.25:7801"
+export SWARMUI="http://localhost:7801"
 export REFRESH_SECONDS=60
 ./run_local_server.sh
 
