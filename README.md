@@ -6,6 +6,34 @@ Are you dreaming about Christmas? This small web service asks an image model to 
 
 The UI is intentionally simple: it maximizes each generated scene for maximum impact, shows the prompt used, and periodically requests a new image so the gallery keeps evolving like a holiday slideshow.
 
+## Quick Start
+
+The Christmas dream engine uses either a locally hosted SwarmUI installation or will use an OpenAI image-gen API compatible endpoint (e.g. dalle-e-3, gpt-image-1). To select the one you want use these simple docker commands to pull the engine and get it started. 
+
+**SwarmUI Option**
+
+```bash
+docker run -p 4000:4000 \
+	-e IMAGE_PROVIDER=swarmui \
+	-e SWARMUI="http://10.0.1.25:7801" \
+	-e IMAGE_MODEL="Flux/flux1-schnell-fp8" \
+	-e IMAGE_CFGSCALE="1.0" \
+	-e IMAGE_STEPS="6" \
+	jasonacox/christmas-ai-dreams:latest
+```
+
+**OpenAI Option**
+
+```bash
+docker run -p 4000:4000 \
+	-e IMAGE_PROVIDER=openai \
+	-e OPENAI_IMAGE_API_KEY="sk-..." \
+	-e OPENAI_IMAGE_API_BASE="https://api.openai.com/v1" \
+	-e OPENAI_IMAGE_MODEL="dall-e-3" \
+	-e OPENAI_IMAGE_SIZE="1024x1024" \
+	jasonacox/christmas-ai-dreams:latest
+```
+
 ## Local development
 
 Quick steps to run the project locally for development:
@@ -44,36 +72,6 @@ Notes:
 ## Contributing
 
 Ideas, fixes, and improvements are welcome. Fork the repo, make your changes, and open a pull request. If you have suggestions for new scene prompts, UI tweaks, or provider integrations, please contribute so the community can enjoy more festive AI dreams!
-
-## Quick Start
-
-The Christmas dream engine uses either a locally hosted SwarmUI installation or will use an OpenAI image-gen API compatible endpoint (e.g. dalle-e-3, gpt-image-1). To select the one you want use these simple docker commands to pull the engine and get it started. 
-
-**SwarmUI Option**
-
-```bash
-docker run -p 4000:4000 \
-	-e IMAGE_PROVIDER=swarmui \
-	-e SWARMUI="http://10.0.1.25:7801" \
-	-e IMAGE_MODEL="Flux/flux1-schnell-fp8" \
-	-e IMAGE_CFGSCALE="1.0" \
-	-e IMAGE_STEPS="6" \
-	jasonacox/christmas-ai-dreams:latest
-```
-
-**OpenAI Option**
-
-```bash
-docker run -p 4000:4000 \
-	-e IMAGE_PROVIDER=openai \
-	-e OPENAI_IMAGE_API_KEY="sk-..." \
-	-e OPENAI_IMAGE_API_BASE="https://api.openai.com/v1" \
-	-e OPENAI_IMAGE_MODEL="dall-e-3" \
-	-e OPENAI_IMAGE_SIZE="1024x1024" \
-	jasonacox/christmas-ai-dreams:latest
-```
-
-## Local Development
 
 ## Share
 
