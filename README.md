@@ -2,6 +2,8 @@
 
 Are you dreaming about Christmas? This small web service asks an image model to imagine festive, fanciful Christmas scenes — from snowy village streets to cozy fireside gatherings — and displays the results in your browser. Prompts are generated automatically to produce varied, high-quality holiday imagery that refreshes at a configurable interval.
 
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/f4f3d637-e569-42bb-aa47-c923247ce32e" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+
 The UI is intentionally simple: it maximizes each generated scene for maximum impact, shows the prompt used, and periodically requests a new image so the gallery keeps evolving like a holiday slideshow.
 
 ## Local development
@@ -94,8 +96,6 @@ Feel free to share any fun scenes in our Discussion forum.
 <img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/c88c1533-3944-40f6-bd02-67a802a3fa73" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
 <img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/1ea366e0-836c-437b-bfe9-7189651b608f" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
-
-<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/f4f3d637-e569-42bb-aa47-c923247ce32e" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
 <img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/070f5de8-9ac1-418f-9713-8cc8cc59b1cb" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
