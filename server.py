@@ -20,6 +20,8 @@ import sys
 import random
 import base64
 import asyncio
+import threading
+import json
 from contextlib import asynccontextmanager
 import logging
 
@@ -49,7 +51,7 @@ IMAGE_TIMEOUT = int(os.environ.get("IMAGE_TIMEOUT", 300))
 IMAGE_PROVIDER = os.environ.get("IMAGE_PROVIDER", "swarmui").lower()
 
 # Server version (can be overridden with APP_VERSION env)
-VERSION = os.environ.get("APP_VERSION", "v0.1.0")
+VERSION = os.environ.get("APP_VERSION", "v0.1.1")
 
 # OpenAI image settings
 OPENAI_IMAGE_API_KEY = os.environ.get("OPENAI_IMAGE_API_KEY", "")
@@ -62,6 +64,10 @@ OPENAI_IMAGE_SIZE = os.environ.get("OPENAI_IMAGE_SIZE", "1024x1024")
 DEFAULT_REFRESH = int(os.environ.get("REFRESH_SECONDS", "10"))
 
 app = FastAPI()
+
+# In-memory cache of the last generated image + lock for thread-safety
+LAST_IMAGE: dict | None = None
+LAST_IMAGE_LOCK = threading.Lock()
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -295,6 +301,16 @@ async def generate_scene(prompt: str | None = None) -> dict:
 async def index(request: Request, refresh: int | None = None):
     """Serve a minimal HTML page that polls `/image` every X seconds."""
     interval = refresh or DEFAULT_REFRESH
+    # If we have a cached last image, embed it so the page shows immediately
+    try:
+        with LAST_IMAGE_LOCK:
+            cached = LAST_IMAGE
+    except Exception:
+        cached = None
+
+    initial_image_js = json.dumps(cached.get("image_data")) if cached else "null"
+    initial_prompt_js = json.dumps(cached.get("prompt")) if cached else "null"
+
     html = f"""
     <!doctype html>
     <html>
@@ -327,10 +343,20 @@ async def index(request: Request, refresh: int | None = None):
                 <div id="meta">Prompt: <span id="prompt">(generating) - Please Wait...</span></div>
                 <script>
                     const interval = {interval} * 1000;
+                    const initialImage = {initial_image_js};
+                    const initialPrompt = {initial_prompt_js};
                     // Show splash immediately while image generation may be in progress
                     const splash = document.getElementById('splash');
                     const img = document.getElementById('img');
                     const promptEl = document.getElementById('prompt');
+
+                    // If a cached image exists, show it immediately and hide splash
+                    if (initialImage) {{
+                        img.src = initialImage;
+                        promptEl.textContent = initialPrompt || '';
+                        img.style.display = '';
+                        splash.style.display = 'none';
+                    }}
 
                     async function fetchImage() {{
                         try {{
@@ -367,6 +393,13 @@ async def image_endpoint(prompt: str | None = None):
     result = await generate_scene(prompt)
     if "error" in result:
         return JSONResponse(status_code=500, content={"error": result["error"]})
+    # Cache the last successful image so the index page can show it immediately
+    try:
+        with LAST_IMAGE_LOCK:
+            global LAST_IMAGE
+            LAST_IMAGE = result
+    except Exception:
+        logger.exception("Failed to cache last image")
     return JSONResponse(content=result)
 
 
