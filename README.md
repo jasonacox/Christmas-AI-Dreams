@@ -77,26 +77,25 @@ docker run -p 4000:4000 \
 
 Feel free to share any fun scenes in our Discussion forum.
 
-<div style="display:flex;flex-wrap:wrap;gap:16px;justify-content:center;align-items:center;padding:12px;">
-	<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/84170fc8-bf76-4cb2-b754-9ca8147ec45f" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/84170fc8-bf76-4cb2-b754-9ca8147ec45f" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
-	<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/623261c4-9d6b-4dc1-86a7-44b9eb6d2582" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/623261c4-9d6b-4dc1-86a7-44b9eb6d2582" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
-	<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/83f2db5a-f2c7-41fb-9fa1-1f44cf32c527" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/83f2db5a-f2c7-41fb-9fa1-1f44cf32c527" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
-	<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/8cdfc88f-3a58-4a06-b12c-2b851320f115" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/8cdfc88f-3a58-4a06-b12c-2b851320f115" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
-	<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/8105055a-6935-4467-a93a-a4699645b6bf" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/8105055a-6935-4467-a93a-a4699645b6bf" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
-	<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/c90e3f89-604d-470f-ae22-038f3f95844d" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/c90e3f89-604d-470f-ae22-038f3f95844d" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
-	<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/bccecb03-58d6-4442-a988-2fd27f78808d" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/bccecb03-58d6-4442-a988-2fd27f78808d" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
-	<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/c88c1533-3944-40f6-bd02-67a802a3fa73" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/c88c1533-3944-40f6-bd02-67a802a3fa73" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
-	<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/1ea366e0-836c-437b-bfe9-7189651b608f" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/1ea366e0-836c-437b-bfe9-7189651b608f" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
-	<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/f4f3d637-e569-42bb-aa47-c923247ce32e" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/f4f3d637-e569-42bb-aa47-c923247ce32e" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
 
-	<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/070f5de8-9ac1-418f-9713-8cc8cc59b1cb" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
-</div>
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/070f5de8-9ac1-418f-9713-8cc8cc59b1cb" style="width:400px;height:400px;object-fit:cover;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.25);" />
+
