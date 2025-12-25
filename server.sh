@@ -16,7 +16,7 @@ CONTAINER_NAME="${CONTAINER_NAME:-christmas-ai-dreams}"
 # Set defaults (same pattern as run_local_server.sh) and export them so
 # docker run -e VAR will inherit the values from this script's environment.
 : "${IMAGE_PROVIDER:=swarmui}"
-: "${SWARMUI:=http://localhost:7801}"
+: "${SWARMUI:=http://host.docker.internal:7801}"
 : "${IMAGE_MODEL:=Flux/flux1-schnell-fp8}"
 : "${IMAGE_CFGSCALE:=1.0}"
 : "${IMAGE_STEPS:=6}"
@@ -47,12 +47,33 @@ fi
 echo "Pulling image ${IMAGE_NAME}:${TAG} (if available)"
 docker pull ${IMAGE_NAME}:${TAG} || true
 
+# Detect whether host.docker.internal is available; on many Linux hosts it is not
+# and containers should use host networking to reach services running on the host.
+USE_HOST_NETWORK=0
+if [ "$(uname -s)" = "Linux" ]; then
+  if ! getent hosts host.docker.internal >/dev/null 2>&1; then
+    echo "host.docker.internal not available — using host networking so container can reach host services"
+    USE_HOST_NETWORK=1
+  fi
+fi
+
+# Decide SWARMUI URL to pass into the container depending on networking
+if [ "$USE_HOST_NETWORK" -eq 1 ]; then
+  SWARMUI_FOR_RUN="http://127.0.0.1:7801"
+else
+  SWARMUI_FOR_RUN="${SWARMUI:-http://host.docker.internal:7801}"
+fi
+
 # Build docker run command with explicit env vars and defaults
-DOCKER_RUN=(docker run -d --name "$CONTAINER_NAME" --restart unless-stopped -p ${PORT}:4000)
+if [ "$USE_HOST_NETWORK" -eq 1 ]; then
+  DOCKER_RUN=(docker run -d --name "$CONTAINER_NAME" --restart unless-stopped --network host)
+else
+  DOCKER_RUN=(docker run -d --name "$CONTAINER_NAME" --restart unless-stopped -p ${PORT}:4000)
+fi
 
 # Basic provider selection and SwarmUI defaults
 DOCKER_RUN+=( -e "IMAGE_PROVIDER=${IMAGE_PROVIDER:-swarmui}" )
-DOCKER_RUN+=( -e "SWARMUI=${SWARMUI:-http://localhost:7801}" )
+DOCKER_RUN+=( -e "SWARMUI=${SWARMUI_FOR_RUN}" )
 
 # Image generation model & parameters
 DOCKER_RUN+=( -e "IMAGE_MODEL=${IMAGE_MODEL:-Flux/flux1-schnell-fp8}" )

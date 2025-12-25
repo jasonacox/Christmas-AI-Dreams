@@ -51,7 +51,7 @@ IMAGE_TIMEOUT = int(os.environ.get("IMAGE_TIMEOUT", 300))
 IMAGE_PROVIDER = os.environ.get("IMAGE_PROVIDER", "swarmui").lower()
 
 # Server version (can be overridden with APP_VERSION env)
-VERSION = os.environ.get("APP_VERSION", "v0.1.1")
+VERSION = os.environ.get("APP_VERSION", "v0.1.2")
 
 # OpenAI image settings
 OPENAI_IMAGE_API_KEY = os.environ.get("OPENAI_IMAGE_API_KEY", "")
@@ -68,6 +68,18 @@ app = FastAPI()
 # In-memory cache of the last generated image + lock for thread-safety
 LAST_IMAGE: dict | None = None
 LAST_IMAGE_LOCK = threading.Lock()
+# Track connected viewers (increment on page load, decrement on unload)
+CONNECTED_VIEWERS = 0
+VIEWERS_LOCK = threading.Lock()
+# Stats
+IMAGES_GENERATED = 0
+MAX_CONNECTED_VIEWERS = 0
+STATS_LOCK = threading.Lock()
+# Generation time stats (seconds)
+GEN_TIME_COUNT = 0
+GEN_TIME_SUM = 0.0
+GEN_TIME_MIN: float | None = None
+GEN_TIME_MAX: float | None = None
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -119,7 +131,9 @@ SCENE_KEYWORDS = [
     "family Christmas dinner table",
     "nativity scene",
     "Bethlehem star over a town",
-    "Santa Claus flying over rooftops",
+    "Santa Claus meeting children",
+    "Santa's workshop with elves",
+    "Santa's sleigh in the night sky",
     "reindeer in a snowy field",
     "ice skating on a frozen pond",
     "children building a snowman",
@@ -130,6 +144,15 @@ SCENE_KEYWORDS = [
     "snow-covered pine forest",
     "festive holiday village",
     "Christmas lights on a tree at night",
+    "winter snow-covered cottage at dusk",
+    "holiday market with wooden stalls and twinkling lights",
+    "enchanted northern-lights over a pine forest",
+    "ice castle with frosted turrets",
+    "cozy kitchen baking cookies",
+    "Victorian street with vintage decorations",
+    "toy-train circling a decorated tree",
+    "snow globe miniature village",
+    "rooftop silhouette with sleigh in the sky",
 ]
 
 STYLE_PREFIX = (
@@ -148,9 +171,27 @@ def build_prompt() -> str:
         "cozy wool textures",
         "gold and red ornaments",
         "soft bokeh lights",
+        "steam rising from mugs of hot cocoa",
+        "frosted window patterns",
+        "gingerbread textures and icing",
+        "elves wrapping gifts",
+        "gentle film grain",
+        "reflections on wet cobblestone",
     ]
     take = random.sample(extras, k=2)
-    prompt = f"{STYLE_PREFIX}, {scene}, {take[0]}, {take[1]}, festive atmosphere"
+
+    # Occasionally use an alternate illustrative style for variety
+    ALTERNATE_STYLES = [
+        "Whimsical, storybook illustration, watercolor, soft palette, hand-painted",
+        "Vintage postcard, warm tones, slight film grain, nostalgic",
+        "Painterly, oil painting, soft brush strokes, cozy mood",
+        "Children's book illustration, flat colors, high charm",
+    ]
+    style_prefix = STYLE_PREFIX
+    if random.random() < 0.2:  # 20% chance to choose an alternate style
+        style_prefix = random.choice(ALTERNATE_STYLES)
+
+    prompt = f"{style_prefix}, {scene}, {take[0]}, {take[1]}, festive atmosphere"
     logger.info("Built prompt: %s", prompt)
     return prompt
 
@@ -350,6 +391,11 @@ async def index(request: Request, refresh: int | None = None):
                     const img = document.getElementById('img');
                     const promptEl = document.getElementById('prompt');
 
+                    // Notify server we're connected (use sendBeacon for unload-safe POST)
+                    try {{
+                        navigator.sendBeacon('/connect');
+                    }} catch (e) {{ /* ignore */ }}
+
                     // If a cached image exists, show it immediately and hide splash
                     if (initialImage) {{
                         img.src = initialImage;
@@ -357,6 +403,11 @@ async def index(request: Request, refresh: int | None = None):
                         img.style.display = '';
                         splash.style.display = 'none';
                     }}
+
+                    // Notify server on unload that we're disconnecting
+                    window.addEventListener('beforeunload', function() {{
+                        try {{ navigator.sendBeacon('/disconnect'); }} catch (e) {{}}
+                    }});
 
                     async function fetchImage() {{
                         try {{
@@ -390,7 +441,35 @@ async def index(request: Request, refresh: int | None = None):
 @app.get("/image")
 async def image_endpoint(prompt: str | None = None):
     """Generate and return a new Christmas scene as JSON with a `image_data` data URI."""
+    # If no prompt override and there are zero connected viewers, skip generation
+    if prompt is None:
+        try:
+            with VIEWERS_LOCK:
+                viewers = CONNECTED_VIEWERS
+        except Exception:
+            viewers = 0
+        if viewers == 0:
+            logger.info("No connected viewers detected; generation paused until viewers connect")
+            return JSONResponse(status_code=429, content={"error": "No connected viewers — generation paused"})
+
+    # Measure generation time and update stats only for successful generations
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
     result = await generate_scene(prompt)
+    elapsed = loop.time() - t0
+    if "error" not in result:
+        try:
+            with STATS_LOCK:
+                global IMAGES_GENERATED, GEN_TIME_COUNT, GEN_TIME_SUM, GEN_TIME_MIN, GEN_TIME_MAX
+                IMAGES_GENERATED += 1
+                GEN_TIME_COUNT += 1
+                GEN_TIME_SUM += elapsed
+                if GEN_TIME_MIN is None or elapsed < GEN_TIME_MIN:
+                    GEN_TIME_MIN = elapsed
+                if GEN_TIME_MAX is None or elapsed > GEN_TIME_MAX:
+                    GEN_TIME_MAX = elapsed
+        except Exception:
+            logger.exception("Failed to update generation stats")
     if "error" in result:
         return JSONResponse(status_code=500, content={"error": result["error"]})
     # Cache the last successful image so the index page can show it immediately
@@ -423,6 +502,80 @@ async def version():
     except Exception:
         pass
     return data
+
+
+@app.get("/stats")
+async def stats():
+    """Return usage and generation statistics."""
+    try:
+        with VIEWERS_LOCK:
+            current = CONNECTED_VIEWERS
+            peak = MAX_CONNECTED_VIEWERS
+        with STATS_LOCK:
+            count = IMAGES_GENERATED
+            gen_count = GEN_TIME_COUNT
+            gen_sum = GEN_TIME_SUM
+            gen_min = GEN_TIME_MIN
+            gen_max = GEN_TIME_MAX
+        avg = (gen_sum / gen_count) if gen_count > 0 else None
+        return {
+            "version": VERSION,
+            "image_provider": IMAGE_PROVIDER,
+            "current_connected": current,
+            "peak_connected": peak,
+            "images_generated": count,
+            "generation_time_min_s": gen_min,
+            "generation_time_max_s": gen_max,
+            "generation_time_avg_s": avg,
+        }
+    except Exception:
+        logger.exception("Failed to read stats")
+        return JSONResponse(status_code=500, content={"error": "unable to read stats"})
+
+
+@app.post("/connect")
+async def connect(request: Request):
+    """Mark a viewer as connected. Called from the page via `navigator.sendBeacon`."""
+    try:
+        with VIEWERS_LOCK:
+            global CONNECTED_VIEWERS, MAX_CONNECTED_VIEWERS
+            CONNECTED_VIEWERS += 1
+            current = CONNECTED_VIEWERS
+            if current > MAX_CONNECTED_VIEWERS:
+                MAX_CONNECTED_VIEWERS = current
+        logger.info("Viewer connected — total=%d (peak=%d)", current, MAX_CONNECTED_VIEWERS)
+        return {"connected": current}
+    except Exception:
+        logger.exception("Failed to register connect")
+        return JSONResponse(status_code=500, content={"error": "connect failed"})
+
+
+@app.post("/disconnect")
+async def disconnect(request: Request):
+    """Mark a viewer as disconnected. Called from the page via `navigator.sendBeacon`."""
+    try:
+        with VIEWERS_LOCK:
+            global CONNECTED_VIEWERS
+            if CONNECTED_VIEWERS > 0:
+                CONNECTED_VIEWERS -= 1
+            current = CONNECTED_VIEWERS
+        logger.info("Viewer disconnected — total=%d", current)
+        return {"connected": current}
+    except Exception:
+        logger.exception("Failed to register disconnect")
+        return JSONResponse(status_code=500, content={"error": "disconnect failed"})
+
+
+@app.get("/viewers")
+async def viewers():
+    """Return current viewer count."""
+    try:
+        with VIEWERS_LOCK:
+            current = CONNECTED_VIEWERS
+        return {"connected": current}
+    except Exception:
+        logger.exception("Failed to read viewers")
+        return JSONResponse(status_code=500, content={"error": "unable to read viewers"})
 
 
 if __name__ == '__main__':
