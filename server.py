@@ -1,18 +1,56 @@
 #!/usr/bin/env python3
 """
-Simple Christmas Scenes web service.
+Christmas AI Dreams - AI-generated Christmas scene web service.
 
-Serves a single-page UI that refreshes every X seconds and requests a new
-AI-generated Christmas scene from a SwarmUI backend.
+Serves a single-page UI that polls for new AI-generated Christmas scenes every
+REFRESH_SECONDS. Supports SwarmUI and OpenAI image providers. Features viewer
+tracking (pauses generation when no viewers connected), image caching, dynamic
+favicon generation at startup, and usage statistics.
+
+Key Environment Variables:
+  IMAGE_PROVIDER       - "swarmui" (default) or "openai"
+  
+  SwarmUI Settings:
+    SWARMUI            - SwarmUI API base URL (default: http://localhost:7801)
+    IMAGE_MODEL        - Model name (default: Flux/flux1-schnell-fp8)
+    IMAGE_CFGSCALE     - CFG scale (default: 1.0)
+    IMAGE_STEPS        - Generation steps (default: 6)
+  
+  OpenAI Settings:
+    OPENAI_IMAGE_API_KEY    - OpenAI API key (required for openai provider)
+    OPENAI_IMAGE_API_BASE   - API base URL (default: https://api.openai.com/v1)
+    OPENAI_IMAGE_MODEL      - Model name (default: dall-e-3)
+    OPENAI_IMAGE_SIZE       - Image size (default: 1024x1024)
+  
+  Server Settings:
+    PORT               - HTTP port (default: 4000)
+    REFRESH_SECONDS    - Client poll interval (default: 10)
+    IMAGE_TIMEOUT      - Generation timeout in seconds (default: 300)
+    APP_VERSION        - Override version string (default: v0.1.2)
 
 Usage:
+  # SwarmUI example
   export SWARMUI="http://10.0.1.25:7801"
   export IMAGE_MODEL="Flux/flux1-schnell-fp8"
-  export IMAGE_CFGSCALE="1.0"
-  export IMAGE_STEPS="6"
   python3 server.py
 
-The service listens on port 4000 by default.
+  # OpenAI example
+  export IMAGE_PROVIDER="openai"
+  export OPENAI_IMAGE_API_KEY="sk-..."
+  python3 server.py
+
+Endpoints:
+  /                  - Main UI (auto-refreshing image viewer)
+  /image             - JSON: generates/returns new scene (or cached if viewers=0)
+  /stats             - JSON: usage stats (images generated, viewers, timing)
+  /favicon.ico       - Multi-size ICO favicon (cached at startup)
+  /apple-touch-icon.png - 180x180 PNG for iOS (cached at startup)
+  /favicon-32x32.png - 32x32 PNG favicon (cached at startup)
+  /health            - Health check
+  /version           - Version and provider info
+  /connect           - POST: register viewer connection
+  /disconnect        - POST: unregister viewer
+  /viewers           - GET: current viewer count
 """
 import io
 import os
@@ -26,7 +64,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 import uvicorn
 
 # Ensure chatbot package is importable when running from repo root
@@ -36,7 +74,7 @@ if CHATBOT_PATH not in sys.path:
     sys.path.insert(0, CHATBOT_PATH)
 
 import aiohttp
-from PIL import Image
+from PIL import Image, ImageDraw
 
 # Configuration (environment overrides)
 PORT = int(os.environ.get("PORT", 4000))
@@ -51,7 +89,7 @@ IMAGE_TIMEOUT = int(os.environ.get("IMAGE_TIMEOUT", 300))
 IMAGE_PROVIDER = os.environ.get("IMAGE_PROVIDER", "swarmui").lower()
 
 # Server version (can be overridden with APP_VERSION env)
-VERSION = os.environ.get("APP_VERSION", "v0.1.2")
+VERSION = os.environ.get("APP_VERSION", "v0.1.3")
 
 # OpenAI image settings
 OPENAI_IMAGE_API_KEY = os.environ.get("OPENAI_IMAGE_API_KEY", "")
@@ -68,6 +106,11 @@ app = FastAPI()
 # In-memory cache of the last generated image + lock for thread-safety
 LAST_IMAGE: dict | None = None
 LAST_IMAGE_LOCK = threading.Lock()
+# In-memory cached icons (generated on startup)
+ICON_LOCK = threading.Lock()
+APPLE_TOUCH_BYTES: bytes | None = None
+FAVICON_32_BYTES: bytes | None = None
+FAVICON_ICO_BYTES: bytes | None = None
 # Track connected viewers (increment on page load, decrement on unload)
 CONNECTED_VIEWERS = 0
 VIEWERS_LOCK = threading.Lock()
@@ -112,7 +155,65 @@ except Exception:
 
 @asynccontextmanager
 async def _lifespan(app):
-    logger.info("Application startup complete. Ready to serve requests.")
+    logger.info("Application startup — generating cached assets and ready to serve requests.")
+    # Generate and cache small PNG icons to avoid regenerating on each request
+    try:
+        def _make_snowman_image(size: int) -> Image.Image:
+            im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(im)
+            cx = size // 2
+            bottom_r = int(size * 0.25)
+            mid_r = int(size * 0.17)
+            head_r = int(size * 0.11)
+            bottom_cy = size - (size // 8) - bottom_r
+            mid_cy = bottom_cy - bottom_r - mid_r + int(size * 0.05)
+            head_cy = mid_cy - mid_r - head_r + int(size * 0.03)
+
+            def circ(x, y, r, fill=(255, 255, 255, 255), outline=(0, 0, 0, 255)):
+                draw.ellipse((x - r, y - r, x + r, y + r), fill=fill, outline=outline)
+
+            circ(cx, bottom_cy, bottom_r)
+            circ(cx, mid_cy, mid_r)
+            circ(cx, head_cy, head_r)
+            eye_r = max(1, int(size * 0.015))
+            draw.ellipse((cx - int(size * 0.05) - eye_r, head_cy - int(size * 0.03) - eye_r, cx - int(size * 0.05) + eye_r, head_cy - int(size * 0.03) + eye_r), fill=(0, 0, 0, 255))
+            draw.ellipse((cx + int(size * 0.05) - eye_r, head_cy - int(size * 0.03) - eye_r, cx + int(size * 0.05) + eye_r, head_cy - int(size * 0.03) + eye_r), fill=(0, 0, 0, 255))
+            nose = [(cx, head_cy), (cx + int(size * 0.11), head_cy - int(size * 0.05)), (cx + int(size * 0.11), head_cy + int(size * 0.05))]
+            draw.polygon(nose, fill=(255, 140, 0, 255))
+            hat_w = head_r * 2 + int(size * 0.08)
+            brim_top = head_cy - head_r - int(size * 0.08)
+            brim_h = max(1, int(size * 0.05))
+            draw.rectangle((cx - hat_w // 2, brim_top, cx + hat_w // 2, brim_top + brim_h), fill=(20, 20, 20, 255))
+            draw.rectangle((cx - (hat_w // 2 - int(size * 0.04)), brim_top - int(size * 0.16), cx + (hat_w // 2 - int(size * 0.04)), brim_top), fill=(30, 30, 30, 255))
+            scarf_top = mid_cy - int(size * 0.12)
+            draw.rectangle((cx - mid_r, scarf_top, cx + mid_r, scarf_top + int(size * 0.08)), fill=(200, 30, 30, 255))
+            return im
+
+        def _png_bytes_from_image(img: Image.Image) -> bytes:
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+
+        # Build and cache the common sizes (PNG + multi-size ICO)
+        global APPLE_TOUCH_BYTES, FAVICON_32_BYTES, FAVICON_ICO_BYTES
+        with ICON_LOCK:
+            try:
+                if APPLE_TOUCH_BYTES is None:
+                    APPLE_TOUCH_BYTES = _png_bytes_from_image(_make_snowman_image(180))
+                if FAVICON_32_BYTES is None:
+                    FAVICON_32_BYTES = _png_bytes_from_image(_make_snowman_image(32))
+                if FAVICON_ICO_BYTES is None:
+                    # Create ICO containing several sizes
+                    sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+                    max_size = max(s[0] for s in sizes)
+                    base = _make_snowman_image(max_size)
+                    buf = io.BytesIO()
+                    base.save(buf, format="ICO", sizes=sizes)
+                    FAVICON_ICO_BYTES = buf.getvalue()
+            except Exception:
+                logger.exception("Failed to generate cached icons at startup")
+    except Exception:
+        logger.exception("Unexpected error during startup icon generation")
     try:
         yield
     finally:
@@ -357,6 +458,9 @@ async def index(request: Request, refresh: int | None = None):
     <html>
       <head>
         <meta charset="utf-8" />
+                <link rel="icon" href="/favicon.ico" />
+                <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+                <meta name="theme-color" content="#b30000" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
         <title>Christmas Scenes</title>
         <style>
@@ -531,6 +635,51 @@ async def stats():
     except Exception:
         logger.exception("Failed to read stats")
         return JSONResponse(status_code=500, content={"error": "unable to read stats"})
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Return cached multi-size ICO favicon."""
+    try:
+        with ICON_LOCK:
+            if FAVICON_ICO_BYTES:
+                headers = {"Cache-Control": "public, max-age=86400"}
+                return Response(content=FAVICON_ICO_BYTES, media_type="image/x-icon", headers=headers)
+        logger.error("Favicon ICO cache is empty")
+        return JSONResponse(status_code=404, content={"error": "favicon not available"})
+    except Exception:
+        logger.exception("Failed to serve favicon")
+        return JSONResponse(status_code=500, content={"error": "favicon serve failed"})
+
+
+@app.get("/apple-touch-icon.png")
+async def apple_touch_icon():
+    """Return cached 180x180 PNG for Apple touch icons."""
+    try:
+        with ICON_LOCK:
+            if APPLE_TOUCH_BYTES:
+                headers = {"Cache-Control": "public, max-age=86400"}
+                return Response(content=APPLE_TOUCH_BYTES, media_type="image/png", headers=headers)
+        logger.error("Apple touch icon cache is empty")
+        return JSONResponse(status_code=404, content={"error": "apple icon not available"})
+    except Exception:
+        logger.exception("Failed to serve apple-touch-icon")
+        return JSONResponse(status_code=500, content={"error": "apple icon serve failed"})
+
+
+@app.get("/favicon-32x32.png")
+async def favicon_32():
+    """Return cached 32x32 PNG favicon."""
+    try:
+        with ICON_LOCK:
+            if FAVICON_32_BYTES:
+                headers = {"Cache-Control": "public, max-age=86400"}
+                return Response(content=FAVICON_32_BYTES, media_type="image/png", headers=headers)
+        logger.error("32x32 favicon cache is empty")
+        return JSONResponse(status_code=404, content={"error": "favicon not available"})
+    except Exception:
+        logger.exception("Failed to serve favicon-32x32")
+        return JSONResponse(status_code=500, content={"error": "favicon serve failed"})
 
 
 @app.post("/connect")

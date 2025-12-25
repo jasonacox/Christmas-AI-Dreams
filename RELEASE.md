@@ -1,5 +1,12 @@
 # Release Notes
 
+## v0.1.3 - Optimized Icon Generation
+
+- **Startup icon caching**: Favicon (multi-size ICO), apple-touch-icon (180×180 PNG), and 32×32 PNG favicon are now generated once at startup and stored in memory.
+- **Simplified icon routes**: `/favicon.ico`, `/apple-touch-icon.png`, and `/favicon-32x32.png` now serve cached bytes directly (no per-request generation), returning 404 if cache unavailable.
+- **Snowman favicon**: Dynamic snowman icon with hat and scarf for festive branding across browsers and iOS devices.
+- Updated module docstring with comprehensive environment variable documentation and endpoint reference.
+
 ## v0.1.2 — Viewer-aware Generation
 
 - Viewer tracking and generation gating: the server now tracks connected viewers and will pause image generation when no clients are connected (saves GPU cycles). Pages call `/connect` and `/disconnect` via `navigator.sendBeacon`.
