@@ -1,5 +1,21 @@
 # Release Notes
 
+## v0.1.6 - UI Updates for Copy
+
+- **Copyable prompt text**: 
+  - Prompt text is now selectable for manual copying
+  - "Copy Prompt" button appears on hover over prompt area
+  - Button shows "Copied!" confirmation feedback
+- **Image download**: 
+  - "Download Image" button appears when hovering over the image (top-right corner)
+  - Auto-generates timestamped filename: `christmas-scene-YYYY-MM-DDTHH-MM-SS.jpg`
+  - Consistent gold button styling matching UI theme
+
+## v0.1.5 - Minor Splash Page Update
+
+- **Splash Page**: Updated logic so that splash page will only show up the first time you visit the site.
+- **Bug fix**: Removed duplicate `_generate_openai()` function that was causing image generation failures after server restarts.
+
 ## v0.1.4 - Session Tracking and Code Quality
 
 - **Session-based tracking**: Each viewer is tracked by a unique session ID (from `X-Session-ID` header or generated from IP+User-Agent), replacing simple increment/decrement counters.

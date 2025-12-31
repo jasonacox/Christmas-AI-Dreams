@@ -110,7 +110,7 @@ IMAGE_TIMEOUT = int(os.environ.get("IMAGE_TIMEOUT", 300))
 IMAGE_PROVIDER = os.environ.get("IMAGE_PROVIDER", "swarmui").lower()
 
 # Server version
-VERSION = "v0.1.5"
+VERSION = "v0.1.6"
 
 # OpenAI image settings
 OPENAI_IMAGE_API_KEY = os.environ.get("OPENAI_IMAGE_API_KEY", "")
@@ -546,10 +546,18 @@ async def index(request: Request, refresh: int | None = None):
         <title>Christmas Scenes</title>
         <style>
             html,body {{ height:100%; margin:0; background:#111; color:#fff; display:flex; align-items:center; justify-content:center; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }}
-            #img {{ max-width:100%; max-height:100vh; box-shadow: 0 8px 30px rgba(0,0,0,0.6); }}
+            #imgContainer {{ position:relative; display:inline-block; }}
+            #img {{ max-width:100%; max-height:100vh; box-shadow: 0 8px 30px rgba(0,0,0,0.6); display:block; }}
+            #downloadBtn {{ position:absolute; top:16px; right:16px; padding:10px 16px; background:rgba(255,215,0,0.95); color:#111; border:none; border-radius:6px; font-size:14px; font-weight:600; cursor:pointer; opacity:0; transition:opacity 0.2s; box-shadow:0 4px 12px rgba(0,0,0,0.4); }}
+            #downloadBtn:hover {{ background:#ffed4e; }}
+            #imgContainer:hover #downloadBtn {{ opacity:1; }}
             /* Bottom-center translucent prompt overlay */
-            #meta {{ position:fixed; left:50%; bottom:8px; transform:translateX(-50%); background:rgba(0,0,0,0.25); padding:4px 6px; border-radius:6px; font-family:Helvetica,Arial; font-size:12px; opacity:0.5; color:#fff; text-align:center; pointer-events:none; max-width:90%; }}
-            #prompt {{ font-size:0.9em; }}
+            #meta {{ position:fixed; left:50%; bottom:8px; transform:translateX(-50%); background:rgba(0,0,0,0.25); padding:4px 6px; border-radius:6px; font-family:Helvetica,Arial; font-size:12px; opacity:0.5; color:#fff; text-align:center; max-width:90%; pointer-events:auto; cursor:pointer; user-select:text; transition:opacity 0.2s; }}
+            #meta:hover {{ opacity:0.9; }}
+            #prompt {{ font-size:0.9em; user-select:text; }}
+            #copyBtn {{ display:none; margin-left:8px; padding:2px 8px; background:#ffd700; color:#111; border:none; border-radius:4px; font-size:0.85em; cursor:pointer; font-weight:600; }}
+            #copyBtn:hover {{ background:#ffed4e; }}
+            #meta:hover #copyBtn {{ display:inline-block; }}
             /* Modern splash screen styling (red & gold theme) */
             #splash {{ display:none; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:40px; background:linear-gradient(135deg, rgba(178,17,17,0.18), rgba(255,215,0,0.12)); border-radius:20px; box-shadow:0 20px 60px rgba(0,0,0,0.5); max-width:600px; }}
             #splash-text {{ font-size:3.5em; font-weight:700; margin-bottom:20px; background:linear-gradient(45deg, #b30000, #ffd700); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; letter-spacing:2px; text-shadow:2px 2px 6px rgba(0,0,0,0.4); }}
@@ -560,13 +568,16 @@ async def index(request: Request, refresh: int | None = None):
         </style>
       </head>
             <body>
-                <img id="img" src="" alt="Christmas scene" style="display:none;" />
+                <div id="imgContainer" style="display:none;">
+                    <img id="img" src="" alt="Christmas scene" />
+                    <button id="downloadBtn">Download Image</button>
+                </div>
                 <div id="splash">
                         <div id="splash-text">Christmas AI Dreaming</div>
                         <div id="splash-link"><a href="http://github.com/jasonacox/Christmas-AI-Dreams" target="_blank" rel="noopener">github.com/jasonacox/Christmas-AI-Dreams</a></div>
                         <div id="splash-version">Version: {VERSION}</div>
                 </div>
-                <div id="meta">Prompt: <span id="prompt">(generating) - Please Wait...</span></div>
+                <div id="meta">Prompt: <span id="prompt">(generating) - Please Wait...</span><button id="copyBtn">Copy Prompt</button></div>
                 <script>
                     const interval = {interval} * 1000;
                     const initialImage = {initial_image_js};
@@ -584,11 +595,39 @@ async def index(request: Request, refresh: int | None = None):
                         navigator.sendBeacon('/connect');
                     }} catch (e) {{ /* ignore */ }}
 
+                    // Copy prompt to clipboard
+                    const copyBtn = document.getElementById('copyBtn');
+                    copyBtn.addEventListener('click', function(e) {{
+                        e.stopPropagation();
+                        const text = promptEl.textContent;
+                        navigator.clipboard.writeText(text).then(function() {{
+                            const originalText = copyBtn.textContent;
+                            copyBtn.textContent = 'Copied!';
+                            setTimeout(function() {{
+                                copyBtn.textContent = originalText;
+                            }}, 1500);
+                        }}).catch(function(err) {{
+                            console.error('Copy failed:', err);
+                        }});
+                    }});
+
+                    // Download image
+                    const imgContainer = document.getElementById('imgContainer');
+                    const downloadBtn = document.getElementById('downloadBtn');
+                    downloadBtn.addEventListener('click', function() {{
+                        const dataUrl = img.src;
+                        const link = document.createElement('a');
+                        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+                        link.download = `christmas-scene-${{timestamp}}.jpg`;
+                        link.href = dataUrl;
+                        link.click();
+                    }});
+
                     // Function to show image and hide splash
                     function showImage(imageData, promptText) {{
                         img.src = imageData;
                         promptEl.textContent = promptText || '';
-                        img.style.display = '';
+                        imgContainer.style.display = 'inline-block';
                         splash.style.display = 'none';
                     }}
 
@@ -613,7 +652,7 @@ async def index(request: Request, refresh: int | None = None):
                     window.addEventListener('beforeunload', function() {{
                         try {{ 
                             navigator.sendBeacon('/disconnect');
-                            localStorage.removeItem('christmas_ai_visited');
+                            // localStorage.removeItem('christmas_ai_visited');
                         }} catch (e) {{}}
                     }});
 
