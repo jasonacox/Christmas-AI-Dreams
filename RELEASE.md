@@ -1,5 +1,21 @@
 # Release Notes
 
+## v0.1.4 - Session Tracking and Code Quality
+
+- **Session-based tracking**: Each viewer is tracked by a unique session ID (from `X-Session-ID` header or generated from IP+User-Agent), replacing simple increment/decrement counters.
+- **5-minute session TTL**: Sessions expire after 5 minutes of inactivity; background cleanup task runs every minute to remove stale sessions.
+- **LRU session eviction**: Sessions now use `OrderedDict` with a maximum limit of 1000 sessions, evicting oldest when limit is reached.
+- **Auto-refresh on activity**: `/image` requests automatically register/refresh the session, keeping downloads counted as active sessions.
+- **Image Caching**: Image generation respects `REFRESH_SECONDS` — subsequent requests within the interval return the cached image instead of generating a new one.
+- **Enhanced `/stats`**: Now includes `active_sessions`, `session_ttl_s`, `last_activity_ts`, `last_activity_age_s`, `last_image_ts`, `last_image_age_s`, and icon cache status flags (removed locks for better performance).
+- **Code quality improvements**:
+  - Module-level constants for magic numbers (icon sizes, cache durations, session limits)
+  - Consolidated thread locks (SESSION_STATE_LOCK, IMAGE_CACHE_LOCK, STATS_LOCK)
+  - Removed unnecessary locks from read-only icon endpoints and informational stats
+  - Extracted provider-specific logic into `_generate_swarmui()` and `_generate_openai()` functions
+  - Removed prompt parameter from `/image` endpoint (server-only random generation)
+  - Added provider name to generation log messages for better debugging
+
 ## v0.1.3 - Optimized Icon Generation
 
 - **Startup icon caching**: Favicon (multi-size ICO), apple-touch-icon (180×180 PNG), and 32×32 PNG favicon are now generated once at startup and stored in memory.

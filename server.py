@@ -26,7 +26,6 @@ Key Environment Variables:
     PORT               - HTTP port (default: 4000)
     REFRESH_SECONDS    - Client poll interval (default: 10)
     IMAGE_TIMEOUT      - Generation timeout in seconds (default: 300)
-    APP_VERSION        - Override version string (default: v0.1.2)
 
 Usage:
   # SwarmUI example
@@ -60,6 +59,9 @@ import base64
 import asyncio
 import threading
 import json
+import uuid
+import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 import logging
 
@@ -76,9 +78,28 @@ if CHATBOT_PATH not in sys.path:
 import aiohttp
 from PIL import Image, ImageDraw
 
+# ── CONSTANTS ────────────────────────────────────────────────────────────────
+
+# Icon sizes
+ICON_SIZE_LARGE = 180
+ICON_SIZE_SMALL = 32
+ICON_CACHE_DURATION = 86400  # 1 day in seconds
+
+# Session management
+MAX_SESSIONS = 1000
+SESSION_CLEANUP_INTERVAL = 60  # seconds
+
+# Prompt validation
+MAX_PROMPT_LENGTH = 500
+
+# ── CONFIGURATION ────────────────────────────────────────────────────────────
+
 # Configuration (environment overrides)
 PORT = int(os.environ.get("PORT", 4000))
 SWARMUI = os.environ.get("SWARMUI", "http://localhost:7801")
+# Normalize SWARMUI: ensure a URL scheme is present so aiohttp requests succeed.
+if SWARMUI and not SWARMUI.startswith("http://") and not SWARMUI.startswith("https://"):
+    SWARMUI = "http://" + SWARMUI
 IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "Flux/flux1-schnell-fp8")
 IMAGE_CFGSCALE = float(os.environ.get("IMAGE_CFGSCALE", 1.0))
 IMAGE_STEPS = int(os.environ.get("IMAGE_STEPS", 6))
@@ -88,8 +109,8 @@ IMAGE_SEED = int(os.environ.get("IMAGE_SEED", -1))
 IMAGE_TIMEOUT = int(os.environ.get("IMAGE_TIMEOUT", 300))
 IMAGE_PROVIDER = os.environ.get("IMAGE_PROVIDER", "swarmui").lower()
 
-# Server version (can be overridden with APP_VERSION env)
-VERSION = os.environ.get("APP_VERSION", "v0.1.3")
+# Server version
+VERSION = "v0.1.5"
 
 # OpenAI image settings
 OPENAI_IMAGE_API_KEY = os.environ.get("OPENAI_IMAGE_API_KEY", "")
@@ -98,25 +119,31 @@ OPENAI_IMAGE_MODEL = os.environ.get("OPENAI_IMAGE_MODEL", "dall-e-3")
 OPENAI_IMAGE_SIZE = os.environ.get("OPENAI_IMAGE_SIZE", "1024x1024")
 
 # Default refresh interval in seconds (front-end will poll /image)
-# Read `REFRESH_SECONDS` env var (fallback to 10s).
-DEFAULT_REFRESH = int(os.environ.get("REFRESH_SECONDS", "10"))
+# Read `REFRESH_SECONDS` env var (fallback to 60s).
+DEFAULT_REFRESH = int(os.environ.get("REFRESH_SECONDS", "60"))
 
 app = FastAPI()
 
-# In-memory cache of the last generated image + lock for thread-safety
+# Session state (sessions, viewers, activity) - single lock for all related state
+SESSIONS: OrderedDict[str, float] = OrderedDict()
+SESSION_TTL = 300  # 5 minutes in seconds
+CONNECTED_VIEWERS = 0
+MAX_CONNECTED_VIEWERS = 0
+LAST_ACTIVITY = 0.0
+SESSION_STATE_LOCK = threading.Lock()
+
+# Image cache (last generated image and metadata)
 LAST_IMAGE: dict | None = None
-LAST_IMAGE_LOCK = threading.Lock()
-# In-memory cached icons (generated on startup)
-ICON_LOCK = threading.Lock()
+LAST_IMAGE_TIME: float | None = None
+IMAGE_CACHE_LOCK = threading.Lock()
+
+# In-memory cached icons (generated on startup, no lock needed for reads)
+ICON_LOCK = threading.Lock()  # Only used during startup generation
 APPLE_TOUCH_BYTES: bytes | None = None
 FAVICON_32_BYTES: bytes | None = None
 FAVICON_ICO_BYTES: bytes | None = None
-# Track connected viewers (increment on page load, decrement on unload)
-CONNECTED_VIEWERS = 0
-VIEWERS_LOCK = threading.Lock()
-# Stats
+# Stats (generation metrics)
 IMAGES_GENERATED = 0
-MAX_CONNECTED_VIEWERS = 0
 STATS_LOCK = threading.Lock()
 # Generation time stats (seconds)
 GEN_TIME_COUNT = 0
@@ -156,6 +183,26 @@ except Exception:
 @asynccontextmanager
 async def _lifespan(app):
     logger.info("Application startup — generating cached assets and ready to serve requests.")
+    
+    # Background task to clean up stale sessions
+    async def _cleanup_sessions():
+        while True:
+            try:
+                await asyncio.sleep(SESSION_CLEANUP_INTERVAL)
+                now = time.time()
+                with SESSION_STATE_LOCK:
+                    stale = [sid for sid, last_seen in SESSIONS.items() if now - last_seen > SESSION_TTL]
+                    for sid in stale:
+                        del SESSIONS[sid]
+                    if stale:
+                        logger.info("Cleaned up %d stale sessions (TTL=%ds)", len(stale), SESSION_TTL)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Error in session cleanup task")
+    
+    cleanup_task = asyncio.create_task(_cleanup_sessions())
+    
     # Generate and cache small PNG icons to avoid regenerating on each request
     try:
         def _make_snowman_image(size: int) -> Image.Image:
@@ -199,9 +246,9 @@ async def _lifespan(app):
         with ICON_LOCK:
             try:
                 if APPLE_TOUCH_BYTES is None:
-                    APPLE_TOUCH_BYTES = _png_bytes_from_image(_make_snowman_image(180))
+                    APPLE_TOUCH_BYTES = _png_bytes_from_image(_make_snowman_image(ICON_SIZE_LARGE))
                 if FAVICON_32_BYTES is None:
-                    FAVICON_32_BYTES = _png_bytes_from_image(_make_snowman_image(32))
+                    FAVICON_32_BYTES = _png_bytes_from_image(_make_snowman_image(ICON_SIZE_SMALL))
                 if FAVICON_ICO_BYTES is None:
                     # Create ICO containing several sizes
                     sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
@@ -218,6 +265,11 @@ async def _lifespan(app):
         yield
     finally:
         logger.info("Application shutdown initiated — performing cleanup.")
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 # Use the lifespan context to avoid deprecated on_event handlers
 app.router.lifespan_context = _lifespan
@@ -297,120 +349,67 @@ def build_prompt() -> str:
     return prompt
 
 
-async def generate_scene(prompt: str | None = None) -> dict:
-    """Generate an image using the SwarmUI generator and return a data URI and metadata."""
-    if prompt is None:
-        prompt = build_prompt()
-
-    logger.info("Image provider: %s", IMAGE_PROVIDER)
-    if IMAGE_PROVIDER == "swarmui":
-        logger.info("Sending prompt to SwarmUI (%s) model=%s", SWARMUI, IMAGE_MODEL)
-        logger.info("Prompt: %s", prompt)
-
-        # Use a lightweight internal SwarmUI client to avoid depending on chatbot package
-        async def _get_session_id(session: aiohttp.ClientSession) -> str | None:
-            try:
-                async with session.post(f"{SWARMUI.rstrip('/')}/API/GetNewSession", json={}, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data.get("session_id")
-            except Exception as e:
-                logger.error("Error getting session id from SwarmUI: %s", e)
-            return None
-
-        async def _call_generate(session: aiohttp.ClientSession, session_id: str, prompt_text: str) -> str | None:
-            params = {
-                "model": IMAGE_MODEL,
-                "width": IMAGE_WIDTH,
-                "height": IMAGE_HEIGHT,
-                "cfgscale": IMAGE_CFGSCALE,
-                "steps": IMAGE_STEPS,
-                "seed": IMAGE_SEED,
-            }
-            raw_input = {"prompt": str(prompt_text), **{k: v for k, v in params.items()}, "donotsave": True}
-            data = {
-                "session_id": session_id,
-                "images": "1",
-                "prompt": str(prompt_text),
-                **{k: str(v) for k, v in params.items()},
-                "donotsave": True,
-                "rawInput": raw_input,
-            }
-            try:
-                async with session.post(f"{SWARMUI.rstrip('/')}/API/GenerateText2Image", json=data, timeout=IMAGE_TIMEOUT) as resp:
-                    if resp.status == 200:
-                        j = await resp.json()
-                        imgs = j.get("images") or []
-                        if imgs:
-                            return imgs[0]
-                    else:
-                        logger.error("SwarmUI GenerateText2Image returned status %s", resp.status)
-            except Exception as e:
-                logger.error("Error calling SwarmUI GenerateText2Image: %s", e)
-            return None
-
-        image_encoded = None
+async def _generate_swarmui(prompt: str) -> dict:
+    """Generate image using SwarmUI backend."""
+    logger.info("Sending prompt to SwarmUI (%s) model=%s", SWARMUI, IMAGE_MODEL)
+    
+    async def _get_session_id(session: aiohttp.ClientSession) -> str | None:
         try:
-            async with aiohttp.ClientSession() as session:
-                session_id = await _get_session_id(session)
-                if not session_id:
-                    logger.error("Unable to obtain SwarmUI session id")
-                    return {"error": "No session"}
-                image_encoded = await _call_generate(session, session_id, prompt)
+            async with session.post(f"{SWARMUI.rstrip('/')}/API/GetNewSession", json={}, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("session_id")
         except Exception as e:
-            logger.error("Unexpected error during SwarmUI generation: %s", e)
-            return {"error": "Generation exception"}
+            logger.error("Error getting session id from SwarmUI: %s", e)
+        return None
 
-        if not image_encoded:
-            logger.error("Image generation failed for prompt: %s", prompt)
-            return {"error": "Generation failed"}
-    elif IMAGE_PROVIDER == "openai":
-        logger.info("Sending prompt to OpenAI Images API (%s) model=%s", OPENAI_IMAGE_API_BASE, OPENAI_IMAGE_MODEL)
-        logger.info("Prompt: %s", prompt)
-
-        async def _call_openai(session: aiohttp.ClientSession, prompt_text: str) -> str | None:
-            url = f"{OPENAI_IMAGE_API_BASE.rstrip('/')}/images/generations"
-            headers = {"Authorization": f"Bearer {OPENAI_IMAGE_API_KEY}", "Content-Type": "application/json"}
-            body = {"model": OPENAI_IMAGE_MODEL, "prompt": prompt_text, "size": OPENAI_IMAGE_SIZE}
-            try:
-                async with session.post(url, json=body, headers=headers, timeout=IMAGE_TIMEOUT) as resp:
-                    if resp.status == 200:
-                        j = await resp.json()
-                        # Support both b64_json and url returns
-                        data = j.get("data") or []
-                        if data:
-                            first = data[0]
-                            if "b64_json" in first:
-                                return first["b64_json"]
-                            if "url" in first:
-                                # fetch binary and return as base64
-                                img_url = first["url"]
-                                async with session.get(img_url) as img_resp:
-                                    if img_resp.status == 200:
-                                        b = await img_resp.read()
-                                        return base64.b64encode(b).decode("utf-8")
-                    else:
-                        text = await resp.text()
-                        logger.error("OpenAI images API returned %s: %s", resp.status, text)
-            except Exception as e:
-                logger.error("Error calling OpenAI Images API: %s", e)
-            return None
-
-        image_encoded = None
+    async def _call_generate(session: aiohttp.ClientSession, session_id: str, prompt_text: str) -> str | None:
+        params = {
+            "model": IMAGE_MODEL,
+            "width": IMAGE_WIDTH,
+            "height": IMAGE_HEIGHT,
+            "cfgscale": IMAGE_CFGSCALE,
+            "steps": IMAGE_STEPS,
+            "seed": IMAGE_SEED,
+        }
+        raw_input = {"prompt": str(prompt_text), **{k: v for k, v in params.items()}, "donotsave": True}
+        data = {
+            "session_id": session_id,
+            "images": "1",
+            "prompt": str(prompt_text),
+            **{k: str(v) for k, v in params.items()},
+            "donotsave": True,
+            "rawInput": raw_input,
+        }
         try:
-            async with aiohttp.ClientSession() as session:
-                image_encoded = await _call_openai(session, prompt)
+            async with session.post(f"{SWARMUI.rstrip('/')}/API/GenerateText2Image", json=data, timeout=IMAGE_TIMEOUT) as resp:
+                if resp.status == 200:
+                    j = await resp.json()
+                    imgs = j.get("images") or []
+                    if imgs:
+                        return imgs[0]
+                else:
+                    logger.error("SwarmUI GenerateText2Image returned status %s", resp.status)
         except Exception as e:
-            logger.error("Unexpected error during OpenAI generation: %s", e)
-            return {"error": "Generation exception"}
+            logger.error("Error calling SwarmUI GenerateText2Image: %s", e)
+        return None
 
-        if not image_encoded:
-            logger.error("OpenAI image generation failed for prompt: %s", prompt)
-            return {"error": "Generation failed"}
-    else:
-        logger.error("Unknown IMAGE_PROVIDER: %s", IMAGE_PROVIDER)
-        return {"error": "Unsupported image provider"}
+    image_encoded = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            session_id = await _get_session_id(session)
+            if not session_id:
+                logger.error("Unable to obtain SwarmUI session id")
+                return {"error": "No session"}
+            image_encoded = await _call_generate(session, session_id, prompt)
+    except Exception as e:
+        logger.error("Unexpected error during SwarmUI generation: %s", e)
+        return {"error": "Generation exception"}
 
+    if not image_encoded:
+        logger.error("Image generation failed for prompt: %s", prompt)
+        return {"error": "Generation failed"}
+    
     # Normalize to raw base64 payload
     if "," in image_encoded:
         image_b64 = image_encoded.split(",", 1)[1]
@@ -439,16 +438,98 @@ async def generate_scene(prompt: str | None = None) -> dict:
     return {"prompt": prompt, "image_data": data_uri}
 
 
+async def _generate_openai(prompt: str) -> dict:
+    """Generate image using OpenAI API."""
+
+    async def _call_openai(session: aiohttp.ClientSession, prompt_text: str) -> str | None:
+        url = f"{OPENAI_IMAGE_API_BASE.rstrip('/')}/images/generations"
+        headers = {"Authorization": f"Bearer {OPENAI_IMAGE_API_KEY}", "Content-Type": "application/json"}
+        body = {"model": OPENAI_IMAGE_MODEL, "prompt": prompt_text, "size": OPENAI_IMAGE_SIZE}
+        try:
+            async with session.post(url, json=body, headers=headers, timeout=IMAGE_TIMEOUT) as resp:
+                if resp.status == 200:
+                    j = await resp.json()
+                    # Support both b64_json and url returns
+                    data = j.get("data") or []
+                    if data:
+                        first = data[0]
+                        if "b64_json" in first:
+                            return first["b64_json"]
+                        if "url" in first:
+                            # fetch binary and return as base64
+                            img_url = first["url"]
+                            async with session.get(img_url) as img_resp:
+                                if img_resp.status == 200:
+                                    b = await img_resp.read()
+                                    return base64.b64encode(b).decode("utf-8")
+                else:
+                    text = await resp.text()
+                    logger.error("OpenAI images API returned %s: %s", resp.status, text)
+        except Exception as e:
+            logger.error("Error calling OpenAI Images API: %s", e)
+        return None
+
+    image_encoded = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            image_encoded = await _call_openai(session, prompt)
+    except Exception as e:
+        logger.error("Unexpected error during OpenAI generation: %s", e)
+        return {"error": "Generation exception"}
+
+    if not image_encoded:
+        logger.error("OpenAI image generation failed for prompt: %s", prompt)
+        return {"error": "Generation failed"}
+    
+    # Normalize to raw base64 payload
+    if "," in image_encoded:
+        image_b64 = image_encoded.split(",", 1)[1]
+    else:
+        image_b64 = image_encoded
+
+    logger.info("Received image data (bytes ~ %d)", len(image_b64))
+
+    try:
+        image = Image.open(io.BytesIO(base64.b64decode(image_b64)))
+    except Exception:
+        return {"error": "Unable to decode image data"}
+
+    # Resize down for web if necessary
+    max_dim = 1024
+    if image.width > max_dim or image.height > max_dim:
+        image.thumbnail((max_dim, max_dim))
+    # Convert to JPEG for browser-friendliness
+    if image.mode == "RGBA":
+        image = image.convert("RGB")
+    out = io.BytesIO()
+    image.save(out, format="JPEG", quality=90)
+    out_b64 = base64.b64encode(out.getvalue()).decode("utf-8")
+    data_uri = f"data:image/jpeg;base64,{out_b64}"
+
+    return {"prompt": prompt, "image_data": data_uri}
+
+
+async def generate_scene(prompt: str | None = None) -> dict:
+    """Generate a festive Christmas scene image. If `prompt` is None, builds a random one."""
+    if prompt is None:
+        prompt = build_prompt()
+    logger.info("Generating Christmas scene (%s): %s", IMAGE_PROVIDER, prompt)
+
+    if IMAGE_PROVIDER == "swarmui":
+        return await _generate_swarmui(prompt)
+    elif IMAGE_PROVIDER == "openai":
+        return await _generate_openai(prompt)
+    else:
+        return {"error": "unknown image provider"}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, refresh: int | None = None):
     """Serve a minimal HTML page that polls `/image` every X seconds."""
     interval = refresh or DEFAULT_REFRESH
     # If we have a cached last image, embed it so the page shows immediately
-    try:
-        with LAST_IMAGE_LOCK:
-            cached = LAST_IMAGE
-    except Exception:
-        cached = None
+    with IMAGE_CACHE_LOCK:
+        cached = LAST_IMAGE
 
     initial_image_js = json.dumps(cached.get("image_data")) if cached else "null"
     initial_prompt_js = json.dumps(cached.get("prompt")) if cached else "null"
@@ -470,7 +551,7 @@ async def index(request: Request, refresh: int | None = None):
             #meta {{ position:fixed; left:50%; bottom:8px; transform:translateX(-50%); background:rgba(0,0,0,0.25); padding:4px 6px; border-radius:6px; font-family:Helvetica,Arial; font-size:12px; opacity:0.5; color:#fff; text-align:center; pointer-events:none; max-width:90%; }}
             #prompt {{ font-size:0.9em; }}
             /* Modern splash screen styling (red & gold theme) */
-            #splash {{ display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:40px; background:linear-gradient(135deg, rgba(178,17,17,0.18), rgba(255,215,0,0.12)); border-radius:20px; box-shadow:0 20px 60px rgba(0,0,0,0.5); max-width:600px; }}
+            #splash {{ display:none; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:40px; background:linear-gradient(135deg, rgba(178,17,17,0.18), rgba(255,215,0,0.12)); border-radius:20px; box-shadow:0 20px 60px rgba(0,0,0,0.5); max-width:600px; }}
             #splash-text {{ font-size:3.5em; font-weight:700; margin-bottom:20px; background:linear-gradient(45deg, #b30000, #ffd700); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; letter-spacing:2px; text-shadow:2px 2px 6px rgba(0,0,0,0.4); }}
             #splash-link {{ margin-top:15px; font-size:1em; opacity:0.95; }}
             #splash-link a {{ color:#ffd700; text-decoration:none; transition:all 0.25s ease; }}
@@ -490,27 +571,50 @@ async def index(request: Request, refresh: int | None = None):
                     const interval = {interval} * 1000;
                     const initialImage = {initial_image_js};
                     const initialPrompt = {initial_prompt_js};
-                    // Show splash immediately while image generation may be in progress
                     const splash = document.getElementById('splash');
                     const img = document.getElementById('img');
                     const promptEl = document.getElementById('prompt');
+
+                    // Check if this is first visit using localStorage
+                    const hasVisited = localStorage.getItem('christmas_ai_visited');
+                    const isFirstVisit = !hasVisited;
 
                     // Notify server we're connected (use sendBeacon for unload-safe POST)
                     try {{
                         navigator.sendBeacon('/connect');
                     }} catch (e) {{ /* ignore */ }}
 
-                    // If a cached image exists, show it immediately and hide splash
-                    if (initialImage) {{
-                        img.src = initialImage;
-                        promptEl.textContent = initialPrompt || '';
+                    // Function to show image and hide splash
+                    function showImage(imageData, promptText) {{
+                        img.src = imageData;
+                        promptEl.textContent = promptText || '';
                         img.style.display = '';
                         splash.style.display = 'none';
                     }}
 
+                    // If NOT first visit, show cached image immediately
+                    if (!isFirstVisit) {{
+                        if (initialImage) {{
+                            showImage(initialImage, initialPrompt);
+                        }}
+                    }} else {{
+                        // First visit: show splash for 2 seconds, then show image if available
+                        splash.style.display = 'flex';
+                        localStorage.setItem('christmas_ai_visited', 'true');
+                        setTimeout(function() {{
+                            if (initialImage) {{
+                                showImage(initialImage, initialPrompt);
+                            }}
+                            // If no image, keep splash showing
+                        }}, 2000);
+                    }}
+
                     // Notify server on unload that we're disconnecting
                     window.addEventListener('beforeunload', function() {{
-                        try {{ navigator.sendBeacon('/disconnect'); }} catch (e) {{}}
+                        try {{ 
+                            navigator.sendBeacon('/disconnect');
+                            localStorage.removeItem('christmas_ai_visited');
+                        }} catch (e) {{}}
                     }});
 
                     async function fetchImage() {{
@@ -519,22 +623,25 @@ async def index(request: Request, refresh: int | None = None):
                             if (!res.ok) return;
                             const j = await res.json();
                             if (j.image_data) {{
-                                // Set image and hide splash
-                                img.src = j.image_data;
-                                promptEl.textContent = j.prompt || '';
-                                img.style.display = '';
-                                splash.style.display = 'none';
-                            }} else {{
-                                // keep showing splash
-                                splash.style.display = '';
+                                showImage(j.image_data, j.prompt);
                             }}
                         }} catch (e) {{
                             console.error(e);
                         }}
                     }}
-                    // Fetch in background immediately, then poll
-                    fetchImage();
-                    setInterval(fetchImage, interval);
+                    
+                    // Start polling after initial display logic
+                    if (isFirstVisit) {{
+                        // On first visit, wait 5s before starting to poll
+                        setTimeout(function() {{
+                            fetchImage();
+                            setInterval(fetchImage, interval);
+                        }}, 5000);
+                    }} else {{
+                        // On subsequent visits, start polling immediately
+                        fetchImage();
+                        setInterval(fetchImage, interval);
+                    }}
                 </script>
             </body>
     </html>
@@ -543,28 +650,55 @@ async def index(request: Request, refresh: int | None = None):
 
 
 @app.get("/image")
-async def image_endpoint(prompt: str | None = None):
+async def image_endpoint(request: Request):
     """Generate and return a new Christmas scene as JSON with a `image_data` data URI."""
-    # If no prompt override and there are zero connected viewers, skip generation
-    if prompt is None:
-        try:
-            with VIEWERS_LOCK:
-                viewers = CONNECTED_VIEWERS
-        except Exception:
-            viewers = 0
-        if viewers == 0:
-            logger.info("No connected viewers detected; generation paused until viewers connect")
-            return JSONResponse(status_code=429, content={"error": "No connected viewers — generation paused"})
+    # Declare globals at the top
+    global CONNECTED_VIEWERS, LAST_ACTIVITY, LAST_IMAGE, LAST_IMAGE_TIME
+    global IMAGES_GENERATED, GEN_TIME_COUNT, GEN_TIME_SUM, GEN_TIME_MIN, GEN_TIME_MAX
+    
+    # Register/refresh session for this image request
+    session_id = request.headers.get("X-Session-ID")
+    if not session_id:
+        client_host = request.client.host if request.client else "unknown"
+        user_agent = request.headers.get("User-Agent", "unknown")
+        session_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{client_host}:{user_agent}"))
+    
+    now = time.time()
+    with SESSION_STATE_LOCK:
+        # Move to end (most recent) if exists, or add new
+        if session_id in SESSIONS:
+            SESSIONS.move_to_end(session_id)
+        SESSIONS[session_id] = now
+        # Enforce max session limit with LRU eviction
+        while len(SESSIONS) > MAX_SESSIONS:
+            # Remove oldest (first) session
+            oldest_id = next(iter(SESSIONS))
+            del SESSIONS[oldest_id]
+            logger.warning("Session limit reached, evicted oldest session: %s", oldest_id[:8])
+        session_count = len(SESSIONS)
+        CONNECTED_VIEWERS = session_count
+        LAST_ACTIVITY = now
+
+    # Rate limit: only generate if REFRESH_SECONDS has elapsed since last generation
+    with IMAGE_CACHE_LOCK:
+        last_time = LAST_IMAGE_TIME
+        cached_result = LAST_IMAGE
+    
+    if last_time and cached_result:
+        elapsed_since_last = now - last_time
+        if elapsed_since_last < DEFAULT_REFRESH:
+            logger.info("Rate limit: %.1fs since last generation (min %ds) — returning cached image", 
+                       elapsed_since_last, DEFAULT_REFRESH)
+            return JSONResponse(content=cached_result)
 
     # Measure generation time and update stats only for successful generations
     loop = asyncio.get_running_loop()
     t0 = loop.time()
-    result = await generate_scene(prompt)
+    result = await generate_scene()
     elapsed = loop.time() - t0
     if "error" not in result:
         try:
             with STATS_LOCK:
-                global IMAGES_GENERATED, GEN_TIME_COUNT, GEN_TIME_SUM, GEN_TIME_MIN, GEN_TIME_MAX
                 IMAGES_GENERATED += 1
                 GEN_TIME_COUNT += 1
                 GEN_TIME_SUM += elapsed
@@ -577,13 +711,12 @@ async def image_endpoint(prompt: str | None = None):
     if "error" in result:
         return JSONResponse(status_code=500, content={"error": result["error"]})
     # Cache the last successful image so the index page can show it immediately
-    try:
-        with LAST_IMAGE_LOCK:
-            global LAST_IMAGE
-            LAST_IMAGE = result
-    except Exception:
-        logger.exception("Failed to cache last image")
-    return JSONResponse(content=result)
+    with IMAGE_CACHE_LOCK:
+        LAST_IMAGE = result
+        LAST_IMAGE_TIME = time.time()
+    # Add cache control header matching REFRESH_SECONDS
+    headers = {"Cache-Control": f"public, max-age={DEFAULT_REFRESH}"}
+    return JSONResponse(content=result, headers=headers)
 
 
 @app.get("/health")
@@ -612,25 +745,43 @@ async def version():
 async def stats():
     """Return usage and generation statistics."""
     try:
-        with VIEWERS_LOCK:
-            current = CONNECTED_VIEWERS
-            peak = MAX_CONNECTED_VIEWERS
-        with STATS_LOCK:
-            count = IMAGES_GENERATED
-            gen_count = GEN_TIME_COUNT
-            gen_sum = GEN_TIME_SUM
-            gen_min = GEN_TIME_MIN
-            gen_max = GEN_TIME_MAX
+        # Read stats without locks - informational only, minor inaccuracies acceptable
+        active_sessions = len(SESSIONS)
+        current = CONNECTED_VIEWERS
+        peak = MAX_CONNECTED_VIEWERS
+        count = IMAGES_GENERATED
+        gen_count = GEN_TIME_COUNT
+        gen_sum = GEN_TIME_SUM
+        gen_min = GEN_TIME_MIN
+        gen_max = GEN_TIME_MAX
+        last_act = LAST_ACTIVITY
+        last_img_time = LAST_IMAGE_TIME
+        last_img_cached = LAST_IMAGE is not None
+        has_ico = FAVICON_ICO_BYTES is not None
+        has_apple = APPLE_TOUCH_BYTES is not None
+        has_32 = FAVICON_32_BYTES is not None
+
+        now = time.time()
         avg = (gen_sum / gen_count) if gen_count > 0 else None
         return {
             "version": VERSION,
             "image_provider": IMAGE_PROVIDER,
+            "active_sessions": active_sessions,
+            "session_ttl_s": SESSION_TTL,
             "current_connected": current,
             "peak_connected": peak,
             "images_generated": count,
             "generation_time_min_s": gen_min,
             "generation_time_max_s": gen_max,
             "generation_time_avg_s": avg,
+            "last_activity_ts": last_act,
+            "last_activity_age_s": (now - last_act) if last_act else None,
+            "last_image_cached": last_img_cached,
+            "last_image_ts": last_img_time,
+            "last_image_age_s": (now - last_img_time) if last_img_time else None,
+            "favicon_ico_cached": has_ico,
+            "apple_touch_cached": has_apple,
+            "favicon_32_cached": has_32,
         }
     except Exception:
         logger.exception("Failed to read stats")
@@ -641,10 +792,9 @@ async def stats():
 async def favicon():
     """Return cached multi-size ICO favicon."""
     try:
-        with ICON_LOCK:
-            if FAVICON_ICO_BYTES:
-                headers = {"Cache-Control": "public, max-age=86400"}
-                return Response(content=FAVICON_ICO_BYTES, media_type="image/x-icon", headers=headers)
+        if FAVICON_ICO_BYTES:
+            headers = {"Cache-Control": f"public, max-age={ICON_CACHE_DURATION}"}
+            return Response(content=FAVICON_ICO_BYTES, media_type="image/x-icon", headers=headers)
         logger.error("Favicon ICO cache is empty")
         return JSONResponse(status_code=404, content={"error": "favicon not available"})
     except Exception:
@@ -654,12 +804,11 @@ async def favicon():
 
 @app.get("/apple-touch-icon.png")
 async def apple_touch_icon():
-    """Return cached 180x180 PNG for Apple touch icons."""
+    """Return cached PNG for Apple touch icons."""
     try:
-        with ICON_LOCK:
-            if APPLE_TOUCH_BYTES:
-                headers = {"Cache-Control": "public, max-age=86400"}
-                return Response(content=APPLE_TOUCH_BYTES, media_type="image/png", headers=headers)
+        if APPLE_TOUCH_BYTES:
+            headers = {"Cache-Control": f"public, max-age={ICON_CACHE_DURATION}"}
+            return Response(content=APPLE_TOUCH_BYTES, media_type="image/png", headers=headers)
         logger.error("Apple touch icon cache is empty")
         return JSONResponse(status_code=404, content={"error": "apple icon not available"})
     except Exception:
@@ -669,12 +818,11 @@ async def apple_touch_icon():
 
 @app.get("/favicon-32x32.png")
 async def favicon_32():
-    """Return cached 32x32 PNG favicon."""
+    """Return cached PNG favicon."""
     try:
-        with ICON_LOCK:
-            if FAVICON_32_BYTES:
-                headers = {"Cache-Control": "public, max-age=86400"}
-                return Response(content=FAVICON_32_BYTES, media_type="image/png", headers=headers)
+        if FAVICON_32_BYTES:
+            headers = {"Cache-Control": f"public, max-age={ICON_CACHE_DURATION}"}
+            return Response(content=FAVICON_32_BYTES, media_type="image/png", headers=headers)
         logger.error("32x32 favicon cache is empty")
         return JSONResponse(status_code=404, content={"error": "favicon not available"})
     except Exception:
@@ -686,14 +834,35 @@ async def favicon_32():
 async def connect(request: Request):
     """Mark a viewer as connected. Called from the page via `navigator.sendBeacon`."""
     try:
-        with VIEWERS_LOCK:
+        # Generate or extract session ID from headers/body (use IP + User-Agent as fallback)
+        session_id = request.headers.get("X-Session-ID")
+        if not session_id:
+            # Fallback: generate session ID from client info
+            client_host = request.client.host if request.client else "unknown"
+            user_agent = request.headers.get("User-Agent", "unknown")
+            session_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{client_host}:{user_agent}"))
+        
+        now = time.time()
+        with SESSION_STATE_LOCK:
+            # Move to end (most recent) if exists, or add new
+            if session_id in SESSIONS:
+                SESSIONS.move_to_end(session_id)
+            SESSIONS[session_id] = now
+            # Enforce max session limit with LRU eviction
+            while len(SESSIONS) > MAX_SESSIONS:
+                oldest_id = next(iter(SESSIONS))
+                del SESSIONS[oldest_id]
+                logger.warning("Session limit reached, evicted oldest session: %s", oldest_id[:8])
+            session_count = len(SESSIONS)
             global CONNECTED_VIEWERS, MAX_CONNECTED_VIEWERS
-            CONNECTED_VIEWERS += 1
-            current = CONNECTED_VIEWERS
-            if current > MAX_CONNECTED_VIEWERS:
-                MAX_CONNECTED_VIEWERS = current
-        logger.info("Viewer connected — total=%d (peak=%d)", current, MAX_CONNECTED_VIEWERS)
-        return {"connected": current}
+            CONNECTED_VIEWERS = session_count
+            if CONNECTED_VIEWERS > MAX_CONNECTED_VIEWERS:
+                MAX_CONNECTED_VIEWERS = CONNECTED_VIEWERS
+            global LAST_ACTIVITY
+            LAST_ACTIVITY = now
+        
+        logger.info("Session connected: %s — total=%d (peak=%d)", session_id[:8], CONNECTED_VIEWERS, MAX_CONNECTED_VIEWERS)
+        return {"connected": CONNECTED_VIEWERS, "session_id": session_id}
     except Exception:
         logger.exception("Failed to register connect")
         return JSONResponse(status_code=500, content={"error": "connect failed"})
@@ -703,13 +872,22 @@ async def connect(request: Request):
 async def disconnect(request: Request):
     """Mark a viewer as disconnected. Called from the page via `navigator.sendBeacon`."""
     try:
-        with VIEWERS_LOCK:
-            global CONNECTED_VIEWERS
-            if CONNECTED_VIEWERS > 0:
-                CONNECTED_VIEWERS -= 1
-            current = CONNECTED_VIEWERS
-        logger.info("Viewer disconnected — total=%d", current)
-        return {"connected": current}
+        session_id = request.headers.get("X-Session-ID")
+        if not session_id:
+            client_host = request.client.host if request.client else "unknown"
+            user_agent = request.headers.get("User-Agent", "unknown")
+            session_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{client_host}:{user_agent}"))
+        
+        with SESSION_STATE_LOCK:
+            if session_id in SESSIONS:
+                del SESSIONS[session_id]
+            session_count = len(SESSIONS)
+            global CONNECTED_VIEWERS, LAST_ACTIVITY
+            CONNECTED_VIEWERS = session_count
+            LAST_ACTIVITY = time.time()
+        
+        logger.info("Session disconnected: %s — total=%d", session_id[:8], CONNECTED_VIEWERS)
+        return {"connected": CONNECTED_VIEWERS}
     except Exception:
         logger.exception("Failed to register disconnect")
         return JSONResponse(status_code=500, content={"error": "disconnect failed"})
@@ -719,7 +897,7 @@ async def disconnect(request: Request):
 async def viewers():
     """Return current viewer count."""
     try:
-        with VIEWERS_LOCK:
+        with SESSION_STATE_LOCK:
             current = CONNECTED_VIEWERS
         return {"connected": current}
     except Exception:
